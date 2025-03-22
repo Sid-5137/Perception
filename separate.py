@@ -3,19 +3,24 @@ import time
 import torch
 from ultralytics import YOLO
 import psutil
+import cv2
 
 # Paths to datasets
 BBOX_DATA_PATH = "E:/Datasets/Vision/Sideguide/Dataset/YOLO_BBOX/data.yaml"
 SEG_DATA_PATH = "E:/Datasets/Vision/Sideguide/Dataset/YOLO_Seg/data.yaml"
-OUTPUT_DIR = "D:\Projects\Walking-Assistant\Perception\models\separate_models"
+OUTPUT_DIR = "D:/Projects/Walking-Assistant/Perception/models/separate_models"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Create output directory
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Fraction of data to use (20%)
+DATA_FRACTION = 0.15
+
 def train_detection_model():
     """Train a standalone object detection model using YOLOv11"""
-    print("Training detection model...")
+    print(f"Training detection model on {DATA_FRACTION*100:.1f}% of data...")
+    
     # YOLOv11 nano variant for detection - will automatically download if not found
     det_model = YOLO('yolo11n.pt')  
     
@@ -26,6 +31,7 @@ def train_detection_model():
         imgsz=640,
         batch=8,
         device=DEVICE,
+        fraction=DATA_FRACTION,  # Use only 20% of the dataset
         name="detection_only",
         project=OUTPUT_DIR
     )
@@ -35,8 +41,9 @@ def train_detection_model():
     return det_model
 
 def train_segmentation_model():
-    """Train a standalone segmentation model using YOLOv11"""   
-    print("Training segmentation model...")
+    """Train a standalone segmentation model using YOLOv11"""
+    print(f"Training segmentation model on {DATA_FRACTION*100:.1f}% of data...")
+    
     # YOLOv11 nano segmentation variant - will automatically download if not found
     seg_model = YOLO('yolo11n-seg.pt')  
     
@@ -47,6 +54,7 @@ def train_segmentation_model():
         imgsz=640,
         batch=8,
         device=DEVICE,
+        fraction=DATA_FRACTION,  # Use only 20% of the dataset
         name="segmentation_only",
         project=OUTPUT_DIR
     )
@@ -59,8 +67,14 @@ def measure_inference_performance(det_model, seg_model, num_samples=50):
     """Measure inference performance of separate models"""
     print("Measuring inference performance of separate models...")
     
-    # Create synthetic test images
-    test_images = [torch.rand(3, 640, 640).to(DEVICE) for _ in range(num_samples)]
+    test_image_paths = [
+        "E:/Datasets/Vision/Sideguide/Dataset/YOLO_BBOX/test/images/MP_SEL_SUR_000002.jpg",
+        # Add more test images as needed
+    ]
+    test_images = [cv2.imread(img_path) for img_path in test_image_paths]
+    test_images = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in test_images]
+    test_images = [cv2.resize(img, (640, 640)) for img in test_images]
+    test_images = [torch.from_numpy(img).permute(2, 0, 1).float().to(DEVICE)/255.0 for img in test_images]
     
     # Warm-up runs to ensure fair timing comparison
     for img in test_images[:5]:
@@ -102,7 +116,7 @@ def measure_inference_performance(det_model, seg_model, num_samples=50):
 def main():
     print(f"Using device: {DEVICE}")
     
-    # Train separate models
+    # Train separate models with partial data (20%)
     det_model = train_detection_model()
     seg_model = train_segmentation_model()
     
