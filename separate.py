@@ -18,321 +18,261 @@ SEG_DATA_PATH = "/media/sid/Sid-HDD/Datasets/Vision/Sideguide/YOLO/YOLO_Seg/data
 OUTPUT_DIR = "/home/sid/Desktop/Projects/Walking-Assistant/Perception/models"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-RUNS_DIR = os.path.join(OUTPUT_DIR, "runs")
-os.makedirs(RUNS_DIR, exist_ok=True)
-
-current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-CURRENT_RUN_DIR = os.path.join(RUNS_DIR, f"run_{current_time}")
-os.makedirs(CURRENT_RUN_DIR, exist_ok=True)
-
-# Training configuration
 DATA_FRACTION = 1.0
-EPOCHS = 50 
-PATIENCE = 10  
-SAVE_PERIOD = 5 
+EPOCHS = 50
+PATIENCE = 10
+SAVE_PERIOD = 5
 
-def train_detection_model():
-    """
-    Train an object detection model with checkpointing and early stopping
-    """
-    logger.info(f"Training detection model on {DATA_FRACTION*100:.1f}% of data...")
-    det_model = YOLO('yolo11n.pt')
+def setup_directories():
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(OUTPUT_DIR, "runs", current_time)
     
-    results = det_model.train(
-        data=BBOX_DATA_PATH,
-        epochs=EPOCHS,
-        imgsz=640,
-        batch=8,
-        device=DEVICE,
-        fraction=DATA_FRACTION,
-        name="detection_only",
-        project=OUTPUT_DIR,
-        patience=PATIENCE,         
-        save_period=SAVE_PERIOD,   
-        cos_lr=True,              
-        amp=True,                 
-        plots=True,                
-        val=True,                  
-        verbose=True               
-    )
-    
-    metrics_path = os.path.join(CURRENT_RUN_DIR, "detection_metrics.json")
-    with open(metrics_path, 'w') as f:
-        json.dump(results, f, indent=4)
-    
-    det_model.export(format="onnx", imgsz=640, simplify=True)
-    
-    return det_model
-
-def train_segmentation_model():
-    """
-    Train a segmentation model with checkpointing and early stopping
-    """
-    logger.info(f"Training segmentation model on {DATA_FRACTION*100:.1f}% of data...")
-    seg_model = YOLO('yolo11n-seg.pt')
-    
-    results = seg_model.train(
-        data=SEG_DATA_PATH,
-        epochs=EPOCHS,
-        imgsz=640,
-        batch=8,
-        device=DEVICE,
-        fraction=DATA_FRACTION,
-        name="segmentation_only",
-        project=OUTPUT_DIR,
-        patience=PATIENCE,
-        save_period=SAVE_PERIOD,   
-        cos_lr=True,               
-        amp=True,                  
-        plots=True,                
-        val=True,                  
-        verbose=True               
-    )
-    
-    metrics_path = os.path.join(CURRENT_RUN_DIR, "segmentation_metrics.json")
-    with open(metrics_path, 'w') as f:
-        json.dump(results, f, indent=4)
-    
-    seg_model.export(format="onnx", imgsz=640, simplify=True)
-    
-    return seg_model
-
-def evaluate_models(det_model, seg_model, data_path=None):
-    """
-    Evaluate models on validation dataset and generate performance metrics
-    """
-    logger.info("Evaluating models on validation dataset...")
-    
-    if data_path is None:
-        det_data_path = BBOX_DATA_PATH.replace("data.yaml", "test/images")
-        seg_data_path = SEG_DATA_PATH.replace("data.yaml", "test/images")
-    else:
-        det_data_path = seg_data_path = data_path
-    
-    det_results = det_model.val(data=BBOX_DATA_PATH, split="test")
-    det_metrics = {
-        "mAP50": det_results.box.map50,
-        "mAP50-95": det_results.box.map,
-        "precision": det_results.box.mp,
-        "recall": det_results.box.mr
+    paths = {
+        'detection_weights': os.path.join(OUTPUT_DIR, "detection_only", "weights"),
+        'segmentation_weights': os.path.join(OUTPUT_DIR, "segmentation_only", "weights"),
+        'run_dir': run_dir,
+        'eval_dir': os.path.join(run_dir, "evaluations")
     }
     
-    seg_results = seg_model.val(data=SEG_DATA_PATH, split="test")
-    seg_metrics = {
-        "mAP50": seg_results.seg.map50,
-        "mAP50-95": seg_results.seg.map,
-        "precision": seg_results.seg.mp,
-        "recall": seg_results.seg.mr
-    }
+    for path in paths.values():
+        os.makedirs(path, exist_ok=True)
     
-    eval_metrics = {
-        "detection": det_metrics,
-        "segmentation": seg_metrics
-    }
-    
-    metrics_path = os.path.join(CURRENT_RUN_DIR, "evaluation_metrics.json")
-    with open(metrics_path, 'w') as f:
-        json.dump(eval_metrics, f, indent=4)
-    
-    logger.info(f"Detection model mAP50: {det_metrics['mAP50']:.4f}, mAP50-95: {det_metrics['mAP50-95']:.4f}")
-    logger.info(f"Segmentation model mAP50: {seg_metrics['mAP50']:.4f}, mAP50-95: {seg_metrics['mAP50-95']:.4f}")
-    
-    return eval_metrics
+    return paths
 
-def measure_inference_performance(det_model, seg_model, num_samples=5):
-    """
-    Measure inference performance of models on test images
-    """
-    logger.info("Measuring inference performance of separate models...")
+def safe_serialize(obj):
+    if isinstance(obj, np.generic):
+        return obj.item()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+def train_detection_model(paths):
+    logger.info("Training detection model...")
     
-    test_dir = "/media/sid/Sid-HDD/Datasets/Vision/Sideguide/YOLO/YOLO_BBOX/test/images"
+    try:
+        model = YOLO('yolo11n.pt')
+        results = model.train(
+            data=BBOX_DATA_PATH,
+            epochs=EPOCHS,
+            imgsz=640,
+            batch=8,
+            device=DEVICE,
+            fraction=DATA_FRACTION,
+            name="detection_only",
+            project=OUTPUT_DIR,
+            patience=PATIENCE,
+            save_period=SAVE_PERIOD,
+            cos_lr=True,
+            amp=True,
+            plots=True,
+            val=True
+        )
+
+        metrics = {
+            'map50': results.box.map50,
+            'map': results.box.map,
+            'precision': results.box.mp,
+            'recall': results.box.mr,
+            'fitness': results.fitness,
+            'epochs': results.epoch
+        }
+        
+        with open(os.path.join(paths['run_dir'], 'detection_metrics.json'), 'w') as f:
+            json.dump(metrics, f, indent=4, default=safe_serialize)
+        
+        model.export(format="onnx", imgsz=640, simplify=True)
+        return model
+
+    except Exception as e:
+        logger.error(f"Detection training failed: {str(e)}")
+        raise
+
+def train_segmentation_model(paths):
+    logger.info("Training segmentation model...")
+    
+    try:
+        model = YOLO('yolo11n-seg.pt')
+        results = model.train(
+            data=SEG_DATA_PATH,
+            epochs=EPOCHS,
+            imgsz=640,
+            batch=8,
+            device=DEVICE,
+            fraction=DATA_FRACTION,
+            name="segmentation_only",
+            project=OUTPUT_DIR,
+            patience=PATIENCE,
+            save_period=SAVE_PERIOD,
+            cos_lr=True,
+            amp=True,
+            plots=True,
+            val=True
+        )
+
+        metrics = {
+            'seg_map50': results.seg.map50,
+            'seg_map': results.seg.map,
+            'miou': getattr(results.seg, 'miou', None),
+            'box_map50': results.box.map50,
+            'box_map': results.box.map,
+            'precision': results.seg.mp,
+            'recall': results.seg.mr,
+            'fitness': results.fitness,
+            'epochs': results.epoch
+        }
+        
+        with open(os.path.join(paths['run_dir'], 'segmentation_metrics.json'), 'w') as f:
+            json.dump(metrics, f, indent=4, default=safe_serialize)
+        
+        model.export(format="onnx", imgsz=640, simplify=True)
+        return model
+
+    except Exception as e:
+        logger.error(f"Segmentation training failed: {str(e)}")
+        raise
+
+def load_trained_model(model_type):
+    weights_dir = os.path.join(OUTPUT_DIR, f"{model_type}_only", "weights")
+    model_path = os.path.join(weights_dir, "best.pt")
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"No trained {model_type} model found at {model_path}")
+    
+    return YOLO(model_path)
+
+def evaluate_model(model, data_path, model_type):
+    logger.info(f"Evaluating {model_type} model...")
+    
+    results = model.val(data=data_path)
+    
+    metrics = {
+        'mAP50': results.box.map50 if model_type == 'detection' else results.seg.map50,
+        'mAP': results.box.map if model_type == 'detection' else results.seg.map,
+        'precision': results.box.mp if model_type == 'detection' else results.seg.mp,
+        'recall': results.box.mr if model_type == 'detection' else results.seg.mr
+    }
+    
+    if model_type == 'segmentation':
+        metrics['mIoU'] = getattr(results.seg, 'miou', None)
+    
+    return metrics
+
+def measure_inference_performance(det_model, seg_model, paths):
+    logger.info("Measuring inference performance...")
+    
+    test_dir = os.path.join(os.path.dirname(BBOX_DATA_PATH), "test", "images")
     test_images = []
-    img_paths = []
     
     if os.path.exists(test_dir):
-        img_files = [f for f in os.listdir(test_dir) if f.endswith(('.jpg', '.jpeg', '.png'))]
-        img_files = img_files[:num_samples]
-        
-        for img_file in img_files:
+        for img_file in os.listdir(test_dir)[:5]:
             img_path = os.path.join(test_dir, img_file)
-            img_paths.append(img_path)
             img = cv2.imread(img_path)
             if img is not None:
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img = cv2.resize(img, (640, 640))
                 img_tensor = torch.from_numpy(img).permute(2, 0, 1).float().to(DEVICE) / 255.0
-                test_images.append(img_tensor)
+                test_images.append((img_path, img_tensor))
     
     if not test_images:
-        logger.warning("No test images found in directory. Using provided sample image.")
-        img_path = "/media/sid/Sid-HDD/Datasets/Vision/Sideguide/Polygon(surface)/Extracted/Surface_1/Surface_001/MP_SEL_SUR_000002.jpg"
-        img_paths = [img_path]
-        img = cv2.imread(img_path)
-        if img is not None:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (640, 640))
-            img_tensor = torch.from_numpy(img).permute(2, 0, 1).float().to(DEVICE) / 255.0
-            test_images = [img_tensor]
-    
-    logger.info(f"Loaded {len(test_images)} test images for evaluation.")
-    
-    for img in test_images[:2]:
-        det_model(img)
-        seg_model(img)
-    
-    seq_times = []
-    for i, img in enumerate(test_images):
-        start_time = time.time()
-        det_results = det_model(img)
-        seg_results = seg_model(img)
-        seq_time = time.time() - start_time
-        seq_times.append(seq_time)
-        logger.info(f"  Image {i+1}: {os.path.basename(img_paths[i])} - {seq_time*1000:.2f} ms")
-    
-    avg_seq_time = sum(seq_times) / len(seq_times)
-    
+        logger.warning("Using synthetic data for benchmarking")
+        test_images = [("synthetic", torch.rand(3, 640, 640).to(DEVICE)) for _ in range(5)]
+
+    times = []
+    for img_path, img_tensor in test_images:
+        start = time.time()
+        det_model(img_tensor)
+        seg_model(img_tensor)
+        times.append(time.time() - start)
+        logger.info(f"Processed {os.path.basename(img_path)} in {times[-1]*1000:.2f}ms")
+
     process = psutil.Process(os.getpid())
-    baseline_memory = process.memory_info().rss / (1024 * 1024)
-    
-    det_model(test_images[0])
-    det_memory = process.memory_info().rss / (1024 * 1024) - baseline_memory
-    
-    seg_model(test_images[0])
-    combined_memory = process.memory_info().rss / (1024 * 1024) - baseline_memory
-    
-    det_size = os.path.getsize(f"{OUTPUT_DIR}/detection_only/weights/best.pt") / (1024 * 1024)
-    seg_size = os.path.getsize(f"{OUTPUT_DIR}/segmentation_only/weights/best.pt") / (1024 * 1024)
-    
-    performance_metrics = {
-        "sequential_inference_time": avg_seq_time * 1000,
-        "fps": 1.0 / avg_seq_time,
-        "model_sizes": {
-            "detection": det_size,
-            "segmentation": seg_size,
-            "total": det_size + seg_size
+    mem_before = process.memory_info().rss
+    det_model(test_images[0][1])
+    mem_after_det = process.memory_info().rss
+    seg_model(test_images[0][1])
+    mem_after_seg = process.memory_info().rss
+
+    metrics = {
+        'avg_inference_time': np.mean(times) * 1000,
+        'fps': 1 / np.mean(times),
+        'memory_usage': {
+            'detection': (mem_after_det - mem_before) / (1024 ** 2),
+            'segmentation': (mem_after_seg - mem_after_det) / (1024 ** 2)
         },
-        "memory_usage": {
-            "detection": det_memory,
-            "combined": combined_memory
-        },
-        "test_images": img_paths
+        'model_sizes': {
+            'detection': os.path.getsize(os.path.join(OUTPUT_DIR, "detection_only", "weights", "best.pt")) / (1024 ** 2),
+            'segmentation': os.path.getsize(os.path.join(OUTPUT_DIR, "segmentation_only", "weights", "best.pt")) / (1024 ** 2)
+        }
     }
     
-    metrics_path = os.path.join(CURRENT_RUN_DIR, "performance_metrics.json")
-    with open(metrics_path, 'w') as f:
-        json.dump(performance_metrics, f, indent=4)
+    with open(os.path.join(paths['eval_dir'], 'performance.json'), 'w') as f:
+        json.dump(metrics, f, indent=4, default=safe_serialize)
     
-    return performance_metrics
+    return metrics
 
-def visualize_results(det_model, seg_model, img_path, output_path):
-    """
-    Visualize detection and segmentation results side by side
-    """
-    img = cv2.imread(img_path)
-    if img is None:
-        logger.error(f"Could not read image: {img_path}")
+def visualize_results(det_model, seg_model, img_path, output_dir):
+    try:
+        img = cv2.imread(img_path)
+        if img is None:
+            raise FileNotFoundError(f"Could not read image: {img_path}")
+            
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (640, 640))
+        img_tensor = torch.from_numpy(img).permute(2, 0, 1).float().to(DEVICE) / 255.0
+
+        with torch.no_grad():
+            start = time.time()
+            det_results = det_model(img_tensor)
+            det_time = time.time() - start
+            
+            start = time.time()
+            seg_results = seg_model(img_tensor)
+            seg_time = time.time() - start
+
+        det_viz = det_results[0].plot()
+        seg_viz = seg_results[0].plot()
+        
+        combined = np.hstack((det_viz, seg_viz))
+        output_path = os.path.join(output_dir, "visualization.jpg")
+        cv2.imwrite(output_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+        
+        return output_path
+    
+    except Exception as e:
+        logger.error(f"Visualization failed: {str(e)}")
         return None
-    
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img_resized = cv2.resize(img_rgb, (640, 640))
-    img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float().to(DEVICE) / 255.0
-    
-    det_start = time.time()
-    det_results = det_model(img_tensor)
-    det_time = (time.time() - det_start) * 1000
-    
-    seg_start = time.time()
-    seg_results = seg_model(img_tensor)
-    seg_time = (time.time() - seg_start) * 1000
-    
-    total_time = det_time + seg_time
-    
-    det_img = det_results[0].plot()
-    seg_img = seg_results[0].plot(masks=True, boxes=True)
-    
-    h, w, c = det_img.shape
-    combined_img = np.zeros((h, w*2, c), dtype=np.uint8)
-    combined_img[:, :w, :] = det_img
-    combined_img[:, w:, :] = seg_img
-    
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(combined_img, f"Detection: {det_time:.2f}ms", (10, 30), font, 0.7, (255, 255, 255), 2)
-    cv2.putText(combined_img, f"Segmentation: {seg_time:.2f}ms", (w+10, 30), font, 0.7, (255, 255, 255), 2)
-    cv2.putText(combined_img, f"Total: {total_time:.2f}ms", (10, 60), font, 0.7, (255, 255, 255), 2)
-    
-    cv2.imwrite(output_path, cv2.cvtColor(combined_img, cv2.COLOR_RGB2BGR))
-    logger.info(f"Visualization saved to {output_path}")
-    
-    cv2.imwrite(output_path.replace(".jpg", "_detection.jpg"), cv2.cvtColor(det_img, cv2.COLOR_RGB2BGR))
-    cv2.imwrite(output_path.replace(".jpg", "_segmentation.jpg"), cv2.cvtColor(seg_img, cv2.COLOR_RGB2BGR))
-    
-    return combined_img
-
-def create_performance_plots(metrics, output_dir):
-    """
-    Create and save performance plots based on collected metrics
-    """
-    plt.figure(figsize=(10, 6))
-    plt.bar(['Detection + Segmentation'], [metrics['sequential_inference_time']], color='blue')
-    plt.ylabel('Inference Time (ms)')
-    plt.title('Model Inference Time')
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.savefig(os.path.join(output_dir, 'inference_time.png'))
-    plt.close()
-    
-    plt.figure(figsize=(10, 6))
-    sizes = metrics['model_sizes']
-    plt.bar(['Detection', 'Segmentation', 'Total'], 
-            [sizes['detection'], sizes['segmentation'], sizes['total']], 
-            color=['blue', 'green', 'red'])
-    plt.ylabel('Model Size (MB)')
-    plt.title('Model Size Comparison')
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.savefig(os.path.join(output_dir, 'model_size.png'))
-    plt.close()
-    
-    plt.figure(figsize=(10, 6))
-    plt.bar(['FPS'], [metrics['fps']], color='orange')
-    plt.ylabel('Frames Per Second')
-    plt.title('Model Throughput (FPS)')
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.savefig(os.path.join(output_dir, 'fps.png'))
-    plt.close()
-    
-    logger.info(f"Performance plots saved to {output_dir}")
 
 def main():
-    """
-    Main execution function with improved training and evaluation pipeline
-    """
-    logger.info(f"Using device: {DEVICE}")
-    logger.info(f"Output directory: {CURRENT_RUN_DIR}")
+    paths = setup_directories()
     
-    det_model = train_detection_model()
-    seg_model = train_segmentation_model()
-    
-    eval_metrics = evaluate_models(det_model, seg_model)
-    
-    perf_metrics = measure_inference_performance(det_model, seg_model)
-    
-    logger.info("\n======== Separate Models Performance ========")
-    logger.info(f"Sequential Inference Time: {perf_metrics['sequential_inference_time']:.2f} ms")
-    logger.info(f"Throughput: {perf_metrics['fps']:.2f} FPS")
-    logger.info(f"Detection Model Size: {perf_metrics['model_sizes']['detection']:.2f} MB")
-    logger.info(f"Segmentation Model Size: {perf_metrics['model_sizes']['segmentation']:.2f} MB")
-    logger.info(f"Total Model Size: {perf_metrics['model_sizes']['total']:.2f} MB")
-    logger.info(f"Combined Memory Usage: {perf_metrics['memory_usage']['combined']:.2f} MB")
-    
-    create_performance_plots(perf_metrics, CURRENT_RUN_DIR)
-    
-    if perf_metrics['test_images']:
-        sample_img = perf_metrics['test_images'][0]
-        output_img = os.path.join(CURRENT_RUN_DIR, "separate_inference_visualization.jpg")
-        visualize_results(det_model, seg_model, sample_img, output_img)
-    
-    logger.info(f"Training and evaluation completed. Results saved to {CURRENT_RUN_DIR}")
+    try:
+        det_model = train_detection_model(paths)
+        seg_model = train_segmentation_model(paths)
+        
+        det_metrics = evaluate_model(det_model, BBOX_DATA_PATH, 'detection')
+        seg_metrics = evaluate_model(seg_model, SEG_DATA_PATH, 'segmentation')
+        
+        with open(os.path.join(paths['eval_dir'], 'metrics.json'), 'w') as f:
+            json.dump({
+                'detection': det_metrics,
+                'segmentation': seg_metrics
+            }, f, indent=4, default=safe_serialize)
+        
+        perf_metrics = measure_inference_performance(det_model, seg_model, paths)
+        
+        sample_image = os.path.join(os.path.dirname(BBOX_DATA_PATH), "test", "images", "MP_SEL_SUR_000002.jpg")
+        viz_path = visualize_results(det_model, seg_model, sample_image, paths['eval_dir'])
+        
+        logger.info("\n=== Final Results ===")
+        logger.info(f"Detection mAP50: {det_metrics['mAP50']:.4f}")
+        logger.info(f"Segmentation mIoU: {seg_metrics.get('mIoU', 'N/A')}")
+        logger.info(f"Average Inference Time: {perf_metrics['avg_inference_time']:.2f}ms")
+        logger.info(f"Results saved to: {paths['run_dir']}")
+        
+        if viz_path:
+            logger.info(f"Visualization saved to: {viz_path}")
+
+    except Exception as e:
+        logger.error(f"Main workflow failed: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()
