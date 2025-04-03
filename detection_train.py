@@ -53,24 +53,20 @@ def train_detection_model():
             val=True
         )
 
-        # Debugging: Log available metrics
         logger.info("Available metrics in results_dict after training:")
         logger.info(results.results_dict)
 
-        # Access detection-specific metrics with safety checks
         metrics = {
-            "mAP50": results.results_dict.get("metrics/mAP50(B)", 0),        # Bounding box mAP50
-            "mAP": results.results_dict.get("metrics/mAP50-95(B)", 0),      # Bounding box mAP50-95
-            "precision": results.results_dict.get("metrics/precision(B)", 0),  # Bounding box precision
-            "recall": results.results_dict.get("metrics/recall(B)", 0),       # Bounding box recall
+            "mAP50": results.results_dict.get("metrics/mAP50(B)", 0),
+            "mAP": results.results_dict.get("metrics/mAP50-95(B)", 0),
+            "precision": results.results_dict.get("metrics/precision(B)", 0),
+            "recall": results.results_dict.get("metrics/recall(B)", 0),
             "epochs": EPOCHS,
         }
 
-        # Save metrics to JSON
         with open(os.path.join(run_dir, "metrics.json"), "w") as f:
             json.dump(metrics, f, indent=4)
 
-        # Export model in ONNX format
         onnx_path = os.path.join(weights_dir, "model.onnx")
         model.export(format="onnx", imgsz=640, simplify=True, output=onnx_path)
         logger.info(f"ONNX model saved to {onnx_path}")
@@ -106,23 +102,19 @@ def evaluate_detection_model():
         logger.info("Evaluating detection model on test dataset...")
         det_results = det_model.val(data=BBOX_DATA_PATH, split="test")
 
-        # Debugging: Print the full results_dict to inspect available keys
         logger.info("Available metrics in results_dict:")
         logger.info(det_results.results_dict)
 
-        # Access detection-specific metrics with safety checks
         det_metrics = {
-            "mAP50": det_results.results_dict.get("metrics/mAP50(B)", 0),        # Bounding box mAP50
-            "mAP": det_results.results_dict.get("metrics/mAP50-95(B)", 0),      # Bounding box mAP50-95
-            "precision": det_results.results_dict.get("metrics/precision(B)", 0),  # Bounding box precision
-            "recall": det_results.results_dict.get("metrics/recall(B)", 0),       # Bounding box recall
+            "mAP50": det_results.results_dict.get("metrics/mAP50(B)", 0),
+            "mAP": det_results.results_dict.get("metrics/mAP50-95(B)", 0),
+            "precision": det_results.results_dict.get("metrics/precision(B)", 0),
+            "recall": det_results.results_dict.get("metrics/recall(B)", 0),
         }
 
-        # Save metrics to JSON
         with open(os.path.join(eval_dir, "detection_metrics.json"), "w") as f:
             json.dump(det_metrics, f, indent=4)
 
-        # Log results
         logger.info("\n=== Detection Model Evaluation Results ===")
         logger.info(f"mAP50: {det_metrics['mAP50']:.4f}")
         logger.info(f"mAP: {det_metrics['mAP']:.4f}")
